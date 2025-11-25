@@ -545,6 +545,15 @@ Windows powershell users need additional escaping:
     help="The path to spill objects to. This path will also be used as the fallback directory when the object store is full of in-use objects and cannot spill.",
 )
 @click.option(
+    "--additional-storage-path",
+    required=False,
+    multiple=True,
+    type=str,
+    help="Additional storage paths to monitor for disk usage. Can be specified multiple times. "
+    "These paths will be included in the dashboard and ray status output. "
+    "Useful for monitoring shared mounted drives or other storage locations.",
+)
+@click.option(
     "--autoscaling-config",
     required=False,
     type=str,
@@ -709,6 +718,7 @@ def start(
     block,
     plasma_directory,
     object_spilling_directory,
+    additional_storage_path,
     autoscaling_config,
     no_redirect_output,
     temp_dir,
@@ -787,6 +797,13 @@ def start(
         system_reserved_cpu=system_reserved_cpu,
         system_reserved_memory=system_reserved_memory,
     )
+
+    # Store additional storage paths in system_config
+    if system_config is None:
+        system_config = {}
+    if additional_storage_path:
+        # Convert tuple to list for JSON serialization
+        system_config["additional_storage_paths"] = list(additional_storage_path)
 
     redirect_output = None if not no_redirect_output else True
 
