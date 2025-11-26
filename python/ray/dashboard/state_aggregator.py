@@ -330,7 +330,27 @@ class StateAPIManager:
             result = do_filter(result, option.filters, TaskState, option.detail)
             num_filtered = len(result)
 
-            result.sort(key=lambda entry: entry["task_id"])
+            # Check if we're filtering by task_id. If so, sort by attempt_number descending
+            # to ensure the latest attempt is returned first (fixes issue with tasks that have retries).
+            is_filtering_by_task_id = any(
+                filter_key == "task_id" and filter_predicate == "="
+                for filter_key, filter_predicate, _ in option.filters
+            )
+            
+            if is_filtering_by_task_id:
+                # Sort by task_id first, then by attempt_number descending (latest first)
+                # Use end_time_ms or start_time_ms as tiebreaker if attempt_number is the same
+                result.sort(
+                    key=lambda entry: (
+                        entry["task_id"],
+                        -(entry.get("attempt_number") or 0),  # Negative for descending
+                        -(entry.get("end_time_ms") or entry.get("start_time_ms") or 0),
+                    )
+                )
+            else:
+                # Default sort by task_id only
+                result.sort(key=lambda entry: entry["task_id"])
+            
             result = list(islice(result, option.limit))
 
             # TODO(rickyx): we could do better with the warning logic. It's messy now.
