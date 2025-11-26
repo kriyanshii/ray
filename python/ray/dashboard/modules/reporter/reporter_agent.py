@@ -40,7 +40,6 @@ from ray._private.ray_constants import (
 from ray._private.telemetry.open_telemetry_metric_recorder import (
     OpenTelemetryMetricRecorder,
 )
-from ray._private import state as ray_state
 from ray._private.utils import get_system_memory
 from ray._raylet import GCS_PID_KEY, RayletClient, WorkerID
 from ray.core.generated import reporter_pb2, reporter_pb2_grpc
@@ -498,9 +497,6 @@ class ReporterAgent(
             self._raylet_client = RayletClient(
                 ip_address=self._ip, port=self._dashboard_agent.node_manager_port
             )
-        
-        # Cache for additional storage paths from system config
-        self._additional_storage_paths = None
 
     async def GetTraceback(self, request, context):
         pid = request.pid
@@ -872,85 +868,8 @@ class ReporterAgent(
         percent = round(used / total, 3) * 100
         return total, available, percent, used
 
-    def _get_additional_storage_paths(self):
-        """Get additional storage paths from system config."""
-        if self._additional_storage_paths is not None:
-            return self._additional_storage_paths
-        
-        # Try to get from GCS system config
-        try:
-            # Initialize GlobalState to access system config
-            global_state = ray_state.GlobalState()
-            if global_state.gcs_options is None:
-                from ray._raylet import GcsClientOptions
-                cluster_id = None
-                if hasattr(self._dashboard_agent, 'cluster_id') and self._dashboard_agent.cluster_id:
-                    cluster_id = self._dashboard_agent.cluster_id.hex()
-                gcs_options = GcsClientOptions.create(
-                    self._gcs_client.address,
-                    cluster_id,
-                    allow_cluster_id_nil=True,
-                    fetch_cluster_id_if_nil=False,
-                )
-                global_state._initialize_global_state(gcs_options)
-            
-            system_config = global_state.get_system_config()
-            additional_paths = system_config.get("additional_storage_paths", [])
-            if additional_paths:
-                # Validate paths exist and are accessible
-                valid_paths = []
-                for path in additional_paths:
-                    if os.path.exists(path):
-                        try:
-                            # Test if we can access the path
-                            psutil.disk_usage(path)
-                            valid_paths.append(path)
-                        except (OSError, PermissionError) as e:
-                            logger.warning(
-                                f"Could not access additional storage path {path}: {e}"
-                            )
-                    else:
-                        logger.warning(
-                            f"Additional storage path does not exist: {path}"
-                        )
-                self._additional_storage_paths = valid_paths
-            else:
-                self._additional_storage_paths = []
-        except Exception as e:
-            logger.debug(f"Could not get additional storage paths from system config: {e}")
-            self._additional_storage_paths = []
-        
-        return self._additional_storage_paths
-
     @staticmethod
-    def _get_disk_quota(path):
-        """Get disk quota information for a path if available.
-        
-        Returns a dict with quota information, or None if quotas are not available.
-        On Linux, uses os.statvfs to get filesystem-level quota information.
-        Note: This provides filesystem-level info. For user-specific quotas,
-        would need to parse quota commands (quota, df -i) or use quota APIs.
-        """
-        if sys.platform == "win32":
-            # Windows doesn't have statvfs, quota detection not supported
-            return None
-        
-        try:
-            # Note: statvfs provides filesystem-level info, not user quotas
-            # For user quotas, would need to parse quota commands or use quota APIs
-            stat = os.statvfs(path)
-            # f_bavail is available to non-superuser, f_blocks is total blocks
-            # This gives filesystem-level available space, not user quota
-            return {
-                "filesystem_total": stat.f_blocks * stat.f_frsize,
-                "filesystem_available": stat.f_bavail * stat.f_frsize,
-                "filesystem_free": stat.f_bfree * stat.f_frsize,
-            }
-        except (OSError, AttributeError):
-            # statvfs not available or failed
-            return None
-
-    def _get_disk_usage(self):
+    def _get_disk_usage():
         if IN_KUBERNETES_POD and not ENABLE_K8S_DISK_USAGE:
             # If in a K8s pod, disable disk display by passing in dummy values.
             return {
@@ -961,28 +880,10 @@ class ReporterAgent(
         else:
             root = os.sep
         tmp = get_user_temp_dir()
-        disk_usage = {
+        return {
             "/": psutil.disk_usage(root),
             tmp: psutil.disk_usage(tmp),
         }
-        
-        # Add additional storage paths
-        additional_paths = self._get_additional_storage_paths()
-        for path in additional_paths:
-            try:
-                usage = psutil.disk_usage(path)
-                # Try to get quota information if available
-                quota_info = self._get_disk_quota(path)
-                if quota_info:
-                    # Store quota info as metadata (could be used for display)
-                    # For now, we use the regular disk_usage but quota info is available
-                    # if needed for future enhancements
-                    pass
-                disk_usage[path] = usage
-            except (OSError, PermissionError) as e:
-                logger.warning(f"Could not get disk usage for {path}: {e}")
-        
-        return disk_usage
 
     @staticmethod
     def _get_disk_io_stats():
